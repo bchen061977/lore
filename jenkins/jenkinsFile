@@ -1,0 +1,142 @@
+/*
+ * Jenkins pipeline — dev environment
+ * Build → push to Artifactory → deploy to EKS
+ *
+ * Required Jenkins credentials
+ * ─────────────────────────────────────────────
+ *   • artifactory-docker-cred   (Username + API‑key / password, kind = “Username with password”)
+ *   • jenkins-ci-role           (ARN of IAM role Jenkins can assume; kind = “Secret text”)
+ *
+ * Required build‑agent tooling
+ * ─────────────────────────────────────────────
+ *   • Docker engine + CLI            (build & push)
+ *   • AWS CLI v2                     (assume role + update‑kubeconfig)
+ *   • kubectl                        (deploy)
+ *   • (Optional) JFrog CLI           (not used here, but handy for promotion etc.)
+ */
+
+pipeline {
+  agent { label 'docker-build' }          // Adjust to your executor label
+
+  /* ──────────────────────────────────────
+     Global pipeline settings
+     ────────────────────────────────────── */
+  options {
+    ansiColor('xterm')
+    timestamps()
+    skipDefaultCheckout()                 // We clone explicitly to pin the branch
+  }
+
+  /* ──────────────────────────────────────
+     Environment-wide variables
+     ────────────────────────────────────── */
+  environment {
+    /* Infra specifics — edit these */
+    AWS_REGION    = 'us-west-2'
+    CLUSTER_NAME  = 'k8s-dev'
+    NAMESPACE     = 'dev'
+    DEPLOYMENT    = 'myapp'
+
+    /* Artifactory registry coordinates */
+    ARTIFACTORY_DOMAIN = 'artifactory.mycorp.com'   // FQDN of your Artifactory instance
+    ARTIFACTORY_REPO   = 'docker-dev-local'         // Docker repo name in Artifactory
+
+    /* Image naming */
+    IMAGE_TAG  = "${env.BUILD_NUMBER}"
+    IMAGE_NAME = 'myapp'
+    IMAGE_URI  = "${ARTIFACTORY_DOMAIN}/${ARTIFACTORY_REPO}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+    /* Jenkins credentials IDs (injected automatically) */
+    ROLE_ARN          = credentials('jenkins-ci-role')         // secret‑text
+    ARTIFACTORY_CRED  = credentials('artifactory-docker-cred') // username & password / API key
+  }
+
+  /* ──────────────────────────────────────
+     Pipeline stages
+     ────────────────────────────────────── */
+  stages {
+
+    stage('Checkout source') {
+      steps {
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: '*/main']],
+          userRemoteConfigs: [[url: 'https://github.com/<org>/<repo>.git']]
+        ])
+      }
+    }
+
+    stage('Unit tests') {
+      when { expression { fileExists('gradlew') || fileExists('mvnw') || fileExists('package.json') } }
+      steps {
+        sh '''
+          if [ -f gradlew   ]; then ./gradlew test
+          elif [ -f mvnw    ]; then ./mvnw test
+          elif [ -f package.json ]; then npm test || true
+          else
+            echo "No recognisable build tool found – skipping tests"
+          fi
+        '''
+      }
+    }
+
+    stage('Build container') {
+      steps {
+        sh '''
+          echo "🔧  Building ${IMAGE_URI}"
+          docker build -t ${IMAGE_URI} .
+        '''
+      }
+    }
+
+    stage('Push image to Artifactory') {
+      steps {
+        script {
+          withCredentials([usernamePassword(credentialsId: 'artifactory-docker-cred',
+                                            usernameVariable: 'ART_USER',
+                                            passwordVariable: 'ART_PASS')]) {
+            sh '''
+              echo "$ART_PASS" | docker login ${ARTIFACTORY_DOMAIN} -u "$ART_USER" --password-stdin
+              docker push ${IMAGE_URI}
+              docker logout ${ARTIFACTORY_DOMAIN}
+            '''
+          }
+        }
+      }
+    }
+
+    stage('Deploy to dev EKS') {
+      steps {
+        withAWS(role: "${ROLE_ARN}", roleSessionName: "jenkins-${env.BUILD_ID}", region: "${AWS_REGION}") {
+          sh '''
+            # Configure kubectl for the cluster
+            aws eks update-kubeconfig --name ${CLUSTER_NAME} --region ${AWS_REGION}
+
+            # Rolling update
+            kubectl -n ${NAMESPACE} set image deployment/${DEPLOYMENT} ${DEPLOYMENT}=${IMAGE_URI} --record
+
+            # Block until the rollout completes (optional but nice)
+            kubectl -n ${NAMESPACE} rollout status deployment/${DEPLOYMENT}
+          '''
+        }
+      }
+    }
+  }
+
+  /* ──────────────────────────────────────
+     Post‑build housekeeping
+     ────────────────────────────────────── */
+  post {
+    success {
+      echo "${IMAGE_URI} deployed to dev successfully!"
+    }
+    failure {
+      echo "Build failed – check the console output."
+    }
+    always {
+      // Keep disk space tidy on the agent
+      sh 'docker system prune -af || true'
+    }
+  }
+}
+
