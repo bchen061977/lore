@@ -27,16 +27,16 @@ This is a high-level phased approach for implementing and rolling out this frame
 Inside EKS cluster create namespaces for each data team. after containerization and deploying to each data teams namespace they can test to make sure everything is correct.<br>
 Then we can deploy to qa for qa dept to test. after that staging for a final review and then production<br>
 <br>
-live
-├── aws
-│   ├── terragrunt.hcl          # ← AWS‑only root (backend + aws provider)
-│   └── {dev,qa,staging,prod}
-│       ├── envcommon.hcl
-│       ├── networking/terragrunt.hcl
-│       └── eks/terragrunt.hcl
-└── gcp
-    ├── terragrunt.hcl          # ← GCP‑only root (backend + google provider)
-    └── {dev,qa,staging,prod}
-        ├── envcommon.hcl
-        ├── networking/terragrunt.hcl
-        └── gke/terragrunt.hcl
+live<Br>
+├── aws<Br>
+│   ├── terragrunt.hcl          # ← AWS‑only root (backend + aws provider)<Br>
+│   └── {dev,qa,staging,prod}<Br>
+│       ├── envcommon.hcl<Br>
+│       ├── networking/terragrunt.hcl<Br>
+│       └── eks/terragrunt.hcl<Br>
+└── gcp<Br>
+    ├── terragrunt.hcl          # ← GCP‑only root (backend + google provider)<Br>
+    └── {dev,qa,staging,prod}<Br>
+        ├── envcommon.hcl<Br>
+        ├── networking/terragrunt.hcl<Br>
+        └── gke/terragrunt.hcl<Br>
